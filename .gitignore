@@ -1,0 +1,33 @@
+# Large/generated artifacts -- not tracked, regenerated locally per README
+data/raw_coco/images/
+data/raw_coco/*.json
+data/raw_coco/splits/
+checkpoints/*.pth
+checkpoints/*.log
+checkpoints/*.json
+exports/*.onnx
+exports/*.manifest.json
+logs/run_*/
+
+# Keep directory structure without tracking contents
+!data/raw_coco/.gitkeep
+!checkpoints/.gitkeep
+!exports/.gitkeep
+!logs/.gitkeep
+
+# MMDetection clone (setup_env.sh clones this fresh; don't vendor it)
+mmdetection/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.ipynb_checkpoints/
+
+# Env
+.env
+*.venv/
+venv/
+
+# OS
+.DS_Store
