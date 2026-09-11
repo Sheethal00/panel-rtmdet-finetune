@@ -31,3 +31,6 @@ venv/
 
 # OS
 .DS_Store
+checkpoints/*/
+checkpoints/*.py
+checkpoints/last_checkpoint

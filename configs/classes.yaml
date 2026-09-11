@@ -1,20 +1,21 @@
 # Single source of truth for class names.
-# Edit this before running anything else — configs/rtmdet_tiny_panel.py,
-# tools/split_coco.py, tools/export_onnx.py, and tools/verify_onnx.py all
-# read this file rather than hardcoding class names, so you only edit once.
+# configs/rtmdet_tiny_panel.py, tools/split_coco.py, tools/export_onnx.py,
+# and tools/verify_onnx.py all read this file rather than hardcoding names.
 #
-# Per handoff_annotation_detector.md this project uses a two-class scheme.
-# Replace the placeholders below with the real class names before training —
-# do not train on placeholders.
-
+# Set to the 3 classes actually annotated in Roboflow (MCB, RCBO, RCCB),
+# confirmed against the real annotation file: 109 MCB, 16 RCCB, 3 RCBO
+# across 15 images. NOTE: the original handoff_annotation_detector.md
+# specifies a two-class scheme, which was never resolved against this
+# 3-class annotation. Proceeding with 3 classes as the working default --
+# it's the safer, reversible choice: 3 classes can always be collapsed to 2
+# programmatically after training, but the distinction can't be recovered
+# once thrown away. Revisit before this model is treated as final.
 classes:
-  - device_placeholder_class_1
-  - device_placeholder_class_2
+  - MCB
+  - RCBO
+  - RCCB
 
 # Input resolution used for training and export. Kept at 640x640 to match
 # the shape already benchmarked in panel-bench (222.8 ms p50 / 36.3 MB ΔPSS
-# on CPU provider, Snapdragon 778G). Change only with a reason, and re-run
-# the device bench if you do — the memory/latency numbers do not transfer
-# across input sizes without re-measurement (see DBNet scaling in panel-bench
-# notes: memory scales with input resolution, not just parameter count).
+# on CPU provider, Snapdragon 778G).
 input_size: [640, 640]

@@ -2,22 +2,35 @@
 """
 Split a COCO JSON annotation file into train/val sets.
 
-Deliberately does NOT default to train=test on small datasets. With very few
-annotated images (this project currently has 5-8), a standard split leaves
-almost nothing to validate on, and training==testing measures memorization,
-not accuracy. This script makes you choose explicitly:
+Three modes, each answering a different question -- pick based on what you
+actually need right now, not by default:
 
-    --mode auto           80/20 split if enough images, otherwise refuses
-                           and tells you to pick --mode loo or --mode plumbing-only
-    --mode loo            leave-one-out: writes N train/val pairs, one per
-                           held-out image. Use this for any accuracy signal
-                           on a tiny dataset.
-    --mode plumbing-only  train==test, on purpose, for pipeline verification
-                           ONLY. Requires the extra confirmation flag below
-                           and stamps every output file with a warning label.
+    --mode auto            80/20 split if >= 20 images, otherwise refuses and
+                            tells you to pick one of the modes below.
+    --mode small-holdout    A single train/val split for datasets too small for
+                            --mode auto's threshold (e.g. 15 images). Produces
+                            ONE deployable checkpoint, unlike --mode loo. The
+                            val metric from a split this small is NOT a
+                            trustworthy accuracy number -- treat it as a sanity
+                            check (is loss/mAP moving in the right direction at
+                            all) rather than a real evaluation. Use --val-count
+                            to control how many images are held out (default 3
+                            of 15 -- enough to catch a completely broken
+                            training run, not enough to trust the resulting
+                            number as "the" accuracy).
+    --mode loo              Leave-one-out: writes N train/val pairs, one per
+                            held-out image. Gives the best available accuracy
+                            SIGNAL on a tiny dataset, but produces N separate
+                            models, not one checkpoint to deploy. Use this when
+                            the question is "roughly how good is this
+                            approach", not "give me a model to export."
+    --mode plumbing-only    train==test, on purpose, for pipeline verification
+                            ONLY. Requires the extra confirmation flag below
+                            and stamps every output file with a warning label.
 
 Usage:
     python tools/split_coco.py --mode auto
+    python tools/split_coco.py --mode small-holdout --val-count 3
     python tools/split_coco.py --mode loo
     python tools/split_coco.py --mode plumbing-only --i-understand-this-is-not-an-accuracy-test
 """
@@ -34,17 +47,6 @@ SMALL_DATASET_THRESHOLD = 20  # below this, auto mode refuses a normal split
 def load_coco(path):
     with open(path) as f:
         return json.load(f)
-
-
-def images_by_id(coco):
-    return {img["id"]: img for img in coco["images"]}
-
-
-def anns_by_image(coco):
-    out = {}
-    for ann in coco["annotations"]:
-        out.setdefault(ann["image_id"], []).append(ann)
-    return out
 
 
 def subset_coco(coco, image_ids):
@@ -82,8 +84,12 @@ def main():
     )
     parser.add_argument(
         "--mode",
-        choices=["auto", "loo", "plumbing-only"],
+        choices=["auto", "small-holdout", "loo", "plumbing-only"],
         default="auto",
+    )
+    parser.add_argument(
+        "--val-count", type=int, default=3,
+        help="Number of images to hold out for validation in --mode small-holdout",
     )
     parser.add_argument(
         "--i-understand-this-is-not-an-accuracy-test",
@@ -105,11 +111,14 @@ def main():
             print(
                 f"REFUSING: only {n} images found, below the "
                 f"{SMALL_DATASET_THRESHOLD}-image threshold for a normal "
-                f"80/20 split. A split this small either leaves almost "
-                f"nothing to validate on, or invites training on everything.\n"
-                f"Use --mode loo (leave-one-out, gives an accuracy signal on "
-                f"unseen images) or --mode plumbing-only (train==test, "
-                f"pipeline verification only, no accuracy claim).",
+                f"80/20 split.\n"
+                f"Pick one explicitly:\n"
+                f"  --mode small-holdout   one real checkpoint, val metric is "
+                f"a sanity check only (not a trustworthy accuracy number)\n"
+                f"  --mode loo             best available accuracy SIGNAL, "
+                f"but {n} separate models, no single deployable checkpoint\n"
+                f"  --mode plumbing-only   train==test, pipeline verification "
+                f"only, no accuracy claim",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -127,6 +136,36 @@ def main():
         )
         print(f"Wrote train ({len(train_ids)}) / val ({len(val_ids)}) split to {args.out}")
 
+    elif args.mode == "small-holdout":
+        if args.val_count >= n:
+            print(f"REFUSING: --val-count {args.val_count} >= {n} total images "
+                  f"would leave nothing to train on.", file=sys.stderr)
+            sys.exit(1)
+        shuffled = image_ids[:]
+        random.shuffle(shuffled)
+        val_ids = shuffled[:args.val_count]
+        train_ids = shuffled[args.val_count:]
+        with open(os.path.join(args.out, "train.json"), "w") as f:
+            json.dump(subset_coco(coco, train_ids), f)
+        with open(os.path.join(args.out, "val.json"), "w") as f:
+            json.dump(subset_coco(coco, val_ids), f)
+        write_manifest(
+            args.out, "small-holdout",
+            {
+                "n_images": n, "n_train": len(train_ids), "n_val": len(val_ids),
+                "warning": f"val set has only {len(val_ids)} image(s). The "
+                           f"resulting val mAP/loss is a directional sanity "
+                           f"check -- confirms training is doing SOMETHING "
+                           f"reasonable -- not a statistically meaningful "
+                           f"accuracy estimate. Do not quote this number as "
+                           f"'the' model accuracy.",
+            },
+        )
+        print(f"Wrote train ({len(train_ids)}) / val ({len(val_ids)}) small-holdout "
+              f"split to {args.out}")
+        print(f"REMINDER: with only {len(val_ids)} val image(s), treat the "
+              f"resulting metric as a sanity check, not an accuracy claim.")
+
     elif args.mode == "loo":
         fold_dir = os.path.join(args.out, "loo_folds")
         os.makedirs(fold_dir, exist_ok=True)
@@ -141,11 +180,13 @@ def main():
         write_manifest(
             args.out, "leave-one-out",
             {"n_images": n, "n_folds": n,
-             "note": "each fold's val.json is a single held-out image never seen in that fold's training"},
+             "note": "each fold's val.json is a single held-out image never seen in that fold's training. "
+                     "This produces N models, not one -- use small-holdout instead if you need a single "
+                     "checkpoint to export."},
         )
         print(f"Wrote {n} leave-one-out folds to {fold_dir}")
         print("Train and evaluate each fold separately; do not average silently "
-              "without reporting n — with this few images per-fold variance will be large.")
+              "without reporting n -- with this few images per-fold variance will be large.")
 
     elif args.mode == "plumbing-only":
         if not args.confirm_plumbing:
